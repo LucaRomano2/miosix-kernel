@@ -32,7 +32,11 @@
 #include <list>
 #include <functional>
 #include <miosix.h>
+#include <pthread.h>
+#include <sched.h>
+#include <thread>
 #include "callback.h"
+#include "config/miosix_settings.h"
 
 namespace miosix {
 
@@ -106,6 +110,104 @@ private:
     std::list<std::function<void ()>> events; ///< Event queue
     mutable KernelMutex m; ///< Mutex for synchronisation
     ConditionVariable cv; ///< Condition variable for synchronisation
+};
+
+/**
+ * A variable sized priority event queue.
+ * 
+ * Makes use of heap allocations and as such it is not possible to post events
+ * from within interrupt service routines. For this, use FixedEventQueue.
+ * 
+ * This class acts as a synchronization point, multiple threads can post
+ * events, and multiple threads can call run() or runOne() (thread pooling).
+ * 
+ * Events are function that are posted by a thread through post() but executed
+ * in the context of the thread that calls run() or runOne()
+ */
+class PriorityEventQueue
+{
+public:
+    /**
+     * Constructor
+     */
+    PriorityEventQueue() {}
+
+    void post(void (*event)(void *), Priority priority);
+
+    /**
+     * Post an event to the priority queue. This function never blocks.
+     * 
+     * \param event function function to be called in the thread that calls
+     * run() or runOne(). Bind can be used to bind parameters to the function.
+     * \throws std::bad_alloc if there is not enough heap memory
+     */
+    void post(void (*event)(void *));
+
+    /**
+     * This function blocks waiting for events being posted, and when available
+     * it calls the event function. To return from this event loop an event
+     * function must throw an exception.
+     * 
+     * \throws any exception that is thrown by the event functions
+     */
+    void run();
+
+    /**
+     * Run at most one event. This function does not block.
+     * 
+     * \throws any exception that is thrown by the event functions
+     */
+    void runOne();
+
+    /**
+     * \return the number of events in the queue
+     */
+    unsigned int size() const
+    {
+        Lock<FastMutex> l(m);
+        unsigned int size=0;
+        for(int i=PRIORITY_MAX;i>=0;i--)
+        {
+            size+=events[i].size();
+        }
+        return size;
+    }
+    
+    /**
+     * \return true if the priority queue has no events
+     */
+    bool empty() const
+    {
+        Lock<FastMutex> l(m);
+        return size()==0;
+    }
+
+    unsigned int numRunningThreads() const
+    {
+        Lock<FastMutex> l(m);
+        unsigned int num_running_threads=0;
+        for(int i=PRIORITY_MAX;i>=0;i--)
+        {
+            num_running_threads+=runningThreads[i].size();
+        }
+        return num_running_threads;
+    }
+
+    PriorityEventQueue(const PriorityEventQueue&) = delete;
+    PriorityEventQueue& operator= (const PriorityEventQueue&) = delete;
+
+private:
+    unsigned int num_core=2;
+    std::list<void(*)(void*)> events[PRIORITY_MAX]; ///< Event queue for each priority
+    std::list<Thread*> runningThreads[PRIORITY_MAX];
+    std::list<Thread*> waitingThreads[PRIORITY_MAX];
+    mutable FastMutex m; ///< Mutex for synchronisation
+    ConditionVariable cv; ///< Condition variable for synchronisation
+
+    Priority getThreadPriority();
+    Priority getHighestPriority();
+    Thread* getLowerExecutingThread();
+    Thread* getHigherWaitingThread();
 };
 
 /**

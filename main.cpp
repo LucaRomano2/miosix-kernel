@@ -1,11 +1,14 @@
-
-#include <cstdio>
-#include "miosix.h"
-
-using namespace std;
+#include <miosix.h>
+#include <iostream>
 using namespace miosix;
-
 int main()
 {
-    //iprintf("Hello world, write your application here\n");
+    for(;;)
+    {
+        std::cout<<2<<"\n";
+        ledOn();
+        Thread::sleep(1000);
+        ledOff();
+        Thread::sleep(1000);
+    }
 }
