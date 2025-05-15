@@ -70,6 +70,66 @@ void EventQueue::runOne()
 }
 
 //
+// Class PriorityEventQueueBasic
+//
+
+void PriorityEventQueueBasic::post(function<void ()> event, Priority priority)
+{
+    Lock<KernelMutex> l(m[priority.get()]);
+    events[priority.get()].push_back(event);
+    cv[priority.get()].signal();
+}
+
+void PriorityEventQueueBasic::post(function<void ()> event)
+{
+    Thread* current_thread=Thread::getCurrentThread();
+    post(event, current_thread->getPriority().get());
+}
+
+void PriorityEventQueueBasic::run()
+{
+    Thread* thread=Thread::getCurrentThread();
+    int prio=thread->getPriority().get();
+    for(;;)
+    {
+        Lock<KernelMutex> l(m[prio]);
+        while(events[prio].empty()) cv[prio].wait(l);
+        function<void ()> f=events[prio].front();
+        events[prio].pop_front();
+        {
+            Unlock<KernelMutex> u(l);
+            f();
+        }
+    }
+}
+
+void PriorityEventQueueBasic::runOne()
+{
+    Thread* current_thread=Thread::getCurrentThread();
+    int prio=current_thread->getPriority().get();
+    function<void ()> f;
+    {
+        Lock<KernelMutex> l(m[prio]);
+        if(events[prio].empty()) return;
+        f=events[prio].front();
+        events[prio].pop_front();
+    }
+    f();
+}
+
+void PriorityEventQueueBasic::startRun(){
+    Thread* current_thread = Thread::getCurrentThread();
+    for(int i=NUM_PRIORITIES-1;i>=0;i--)
+    {
+        current_thread->setPriority(Priority(i));
+        for(int j=0;j<num_core;j++)
+        {
+            std::thread t(&PriorityEventQueueBasic::run, this);
+        }
+    }
+}
+
+//
 // Class PriorityEventQueue
 //
 
@@ -81,7 +141,7 @@ Priority PriorityEventQueue::getThreadPriority()
 
 Priority PriorityEventQueue::getHighestPriority()
 {
-    for(int i=PRIORITY_MAX-1;i>=0;i--)
+    for(int i=NUM_PRIORITIES-1;i>=0;i--)
     {
         if(events[i].size()!=0) return i;
     }
@@ -90,7 +150,7 @@ Priority PriorityEventQueue::getHighestPriority()
 
 Thread* PriorityEventQueue::getLowerExecutingThread()
 {
-    for(int i=0;i<PRIORITY_MAX;i++)
+    for(int i=0;i<NUM_PRIORITIES;i++)
     {
         if(runningThreads[i].size()!=0)
         {
@@ -102,7 +162,7 @@ Thread* PriorityEventQueue::getLowerExecutingThread()
 
 Thread* PriorityEventQueue::getHigherWaitingThread()
 {
-    for(int i=0;i<PRIORITY_MAX;i++)
+    for(int i=0;i<NUM_PRIORITIES;i++)
     {
         if(waitingThreads[i].size()!=0)
         {

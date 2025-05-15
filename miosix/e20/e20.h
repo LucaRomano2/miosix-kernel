@@ -166,7 +166,7 @@ public:
     {
         Lock<FastMutex> l(m);
         unsigned int size=0;
-        for(int i=PRIORITY_MAX;i>=0;i--)
+        for(int i=NUM_PRIORITIES;i>=0;i--)
         {
             size+=events[i].size();
         }
@@ -186,7 +186,7 @@ public:
     {
         Lock<FastMutex> l(m);
         unsigned int num_running_threads=0;
-        for(int i=PRIORITY_MAX;i>=0;i--)
+        for(int i=NUM_PRIORITIES;i>=0;i--)
         {
             num_running_threads+=runningThreads[i].size();
         }
@@ -198,9 +198,9 @@ public:
 
 private:
     unsigned int num_core=2;
-    std::list<void(*)(void*)> events[PRIORITY_MAX]; ///< Event queue for each priority
-    std::list<Thread*> runningThreads[PRIORITY_MAX];
-    std::list<Thread*> waitingThreads[PRIORITY_MAX];
+    std::list<void(*)(void*)> events[NUM_PRIORITIES]; ///< Event queue for each priority
+    std::list<Thread*> runningThreads[NUM_PRIORITIES];
+    std::list<Thread*> waitingThreads[NUM_PRIORITIES];
     mutable FastMutex m; ///< Mutex for synchronisation
     ConditionVariable cv; ///< Condition variable for synchronisation
 
@@ -208,6 +208,87 @@ private:
     Priority getHighestPriority();
     Thread* getLowerExecutingThread();
     Thread* getHigherWaitingThread();
+};
+
+class PriorityEventQueueBasic
+{
+public:
+    /**
+     * Constructor
+     */
+    PriorityEventQueueBasic() {}
+
+    void post(std::function<void ()> event, Priority priority);
+
+    /**
+     * Post an event to the queue. This function never blocks.
+     * 
+     * \param event function function to be called in the thread that calls
+     * run() or runOne(). Bind can be used to bind parameters to the function.
+     * \throws std::bad_alloc if there is not enough heap memory
+     */
+    void post(std::function<void ()> event);
+
+    /**
+     * This function blocks waiting for events being posted, and when available
+     * it calls the event function. To return from this event loop an event
+     * function must throw an exception.
+     * 
+     * \throws any exception that is thrown by the event functions
+     */
+    void run();
+
+    void startRun();
+
+    /**
+     * Run at most one event. This function does not block.
+     * 
+     * \throws any exception that is thrown by the event functions
+     */
+    void runOne();
+
+    /**
+     * \return the number of events in the queue
+     */
+    unsigned int size() const
+    {
+        for(int i=NUM_PRIORITIES;i>=0;i--)
+        {
+            Lock<KernelMutex> l(m[i]);
+        }
+        unsigned int size=0;
+        for(int i=NUM_PRIORITIES;i>=0;i--)
+        {
+            size+=events[i].size();
+        }
+        return size;
+    }
+    
+    /**
+     * \return true if the queue has no events
+     */
+    bool empty() const
+    {
+        for(int i=NUM_PRIORITIES;i>=0;i--)
+        {
+            Lock<KernelMutex> l(m[i]);
+        }
+        bool empty=false;
+        for(int i=NUM_PRIORITIES;i>=0;i--)
+        {
+            empty=empty&&events[i].empty();
+        }
+        return empty;
+    }
+
+    PriorityEventQueueBasic(const PriorityEventQueueBasic&) = delete;
+    PriorityEventQueueBasic& operator= (const PriorityEventQueueBasic&) = delete;
+
+private:
+    std::list<std::function<void ()>> events[NUM_PRIORITIES]; ///< Event queue
+    mutable KernelMutex m[NUM_PRIORITIES]; ///< Mutex for synchronisation
+    ConditionVariable cv[NUM_PRIORITIES]; ///< Condition variable for synchronisation
+    int num_core=2;
 };
 
 /**
