@@ -130,126 +130,116 @@ void PriorityEventQueueBasic::startRun(){
 }
 
 //
-// Class PriorityEventQueue
+// Class PriorityEventQueueOptimized
 //
 
-Priority PriorityEventQueue::getThreadPriority()
+int PriorityEventQueueOptimized::getRunningEvents()
 {
-    Thread *thread = Thread::getCurrentThread();
-    return thread->getPriority();
+    int sum=0;
+    for(int i=NUM_PRIORITIES;i>=0;i--)
+    {
+        sum+=running_events[i];
+    }
+    return sum;
 }
 
-Priority PriorityEventQueue::getHighestPriority()
+int PriorityEventQueueOptimized::getLowerExecutingEventPriority()
 {
+    int core=0;
+    for(int i=NUM_PRIORITIES;i>=0;i--)
+    {
+        if(core+running_events[i]>num_core) return i;
+        else core+=running_events[i];
+    }
+    return -1;
+}
+
+bool PriorityEventQueueOptimized::canSchedule(int prio)
+{
+    if(getRunningEvents()<num_core || prio<getLowerExecutingEventPriority()) return true;
+    return false;
+}
+
+bool PriorityEventQueueOptimized::setEvent(std::function<void ()>& f, int* prio)
+{
+    Lock<KernelMutex> l(m);
+    if(*prio!=-1)
+    {
+        running_events[*prio]--;
+    }
     for(int i=NUM_PRIORITIES-1;i>=0;i--)
     {
-        if(events[i].size()!=0) return i;
-    }
-    return 0;
-}
-
-Thread* PriorityEventQueue::getLowerExecutingThread()
-{
-    for(int i=0;i<NUM_PRIORITIES;i++)
-    {
-        if(runningThreads[i].size()!=0)
+        if(events[i].size()!=0)
         {
-            return runningThreads[i].front();
+            f=events[i].front();
+            events[i].pop_front();
+            running_events[i]++;
+            *prio=i;
+            return true;
         }
     }
-    return nullptr;
+    return false;
 }
 
-Thread* PriorityEventQueue::getHigherWaitingThread()
+void PriorityEventQueueOptimized::post(function<void ()> event, Priority priority)
 {
-    for(int i=0;i<NUM_PRIORITIES;i++)
+    Lock<KernelMutex> l(m);
+    events[priority.get()].push_back(event);
+    if(canSchedule(priority.get()))
     {
-        if(waitingThreads[i].size()!=0)
-        {
-            return waitingThreads[i].front();
-        }
+        Unlock<KernelMutex> l(m);
+        std::thread t(&PriorityEventQueueOptimized::runThread, this);
     }
-    return nullptr;
+    cv.signal();
 }
 
-void PriorityEventQueue::post(void (*event)(void *), Priority priority)
+void PriorityEventQueueOptimized::post(function<void ()> event)
 {
-    Lock<FastMutex> l(m);
-    Thread* lower_executing_thread=getLowerExecutingThread();
-    if(lower_executing_thread != nullptr && lower_executing_thread->getPriority()<priority)
+    Thread* current_thread=Thread::getCurrentThread();
+    post(event, current_thread->getPriority().get());
+}
+
+void PriorityEventQueueOptimized::runThread()
+{
+    Thread* current_thread = Thread::getCurrentThread();
+    std::function<void ()> f;
+    int prio=-1;
+    while(setEvent(f, &prio))
     {
-        lower_executing_thread->wait();
-        runningThreads[lower_executing_thread->getPriority().get()].pop_front();
-        waitingThreads[lower_executing_thread->getPriority().get()].push_back(lower_executing_thread);
-        Thread* t = Thread::create(*event, 768, priority, NULL, Thread::JOINABLE);
-        runningThreads[priority.get()].push_back(t);
-    }
-    else
-    {
-        events[priority.get()].push_back(event);
-        cv.signal();
+        current_thread->setPriority(Priority(prio));
+        f();
     }
 }
 
-void PriorityEventQueue::post(void (*event)(void *))
+void PriorityEventQueueOptimized::run()
 {
-    Priority priority=getThreadPriority();
-    post(event, priority);
-}
-
-// cambiare la priorità del thread che esegue la funzione
-void PriorityEventQueue::run()
-{
-    Lock<FastMutex> l(m);
+    Thread* thread=Thread::getCurrentThread();
+    int prio=thread->getPriority().get();
     for(;;)
     {
-        while(empty() || numRunningThreads() == num_core) cv.wait(l);
-        Thread* higher_waiting_thread=nullptr;
-        if(getHigherWaitingThread()!=nullptr)
+        Lock<KernelMutex> l(m);
+        while(events[prio].empty()) cv.wait(l);
+        function<void ()> f=events[prio].front();
+        events[prio].pop_front();
         {
-            waitingThreads[higher_waiting_thread->getPriority().get()].pop_front();
-            higher_waiting_thread->wakeup();
-            runningThreads[higher_waiting_thread->getPriority().get()].push_back(higher_waiting_thread);
-        }
-        else
-        {
-            int highest_priority=getHighestPriority().get();
-            void (*f)(void*)=events[highest_priority].front();
-            events[highest_priority].pop_front();
-            {
-                Unlock<FastMutex> u(l);
-                // salvare priorità corrente
-                // prende la priorità di f
-                Thread *current_thread = Thread::getCurrentThread();
-                Priority current_priority = current_thread->getPriority();
-                current_thread->setPriority(Priority(highest_priority));
-                Thread* t = Thread::create(*f, 768, Priority(highest_priority), NULL, Thread::JOINABLE);
-                runningThreads[highest_priority].push_back(t);
-                current_thread->setPriority(current_priority);
-                // ripristana la priorità salvata
-                // anche in runOne()
-            }
+            Unlock<KernelMutex> u(l);
+            f();
         }
     }
 }
 
-void PriorityEventQueue::runOne()
+void PriorityEventQueueOptimized::runOne()
 {
-    int highest_priority;
-    void (*f)(void*);
+    Thread* current_thread=Thread::getCurrentThread();
+    int prio=current_thread->getPriority().get();
+    function<void ()> f;
     {
-        Lock<FastMutex> l(m);
-        if(empty()) return;
-        highest_priority=getHighestPriority().get();
-        f=events[highest_priority].front();
-        events[highest_priority].pop_front();
+        Lock<KernelMutex> l(m);
+        if(events[prio].empty()) return;
+        f=events[prio].front();
+        events[prio].pop_front();
     }
-    Thread *current_thread = Thread::getCurrentThread();
-    Priority current_priority = current_thread->getPriority();
-    current_thread->setPriority(Priority(highest_priority));
-    Thread* t = Thread::create(*f, 768, 0, NULL, Thread::JOINABLE);
-    runningThreads[highest_priority].push_back(t);
-    current_thread->setPriority(current_priority);
+    f();
 }
 
 } //namespace miosix
