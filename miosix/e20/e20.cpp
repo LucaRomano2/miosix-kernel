@@ -83,13 +83,13 @@ void PriorityEventQueueBasic::post(function<void ()> event, Priority priority)
 void PriorityEventQueueBasic::post(function<void ()> event)
 {
     Thread* current_thread=Thread::getCurrentThread();
-    post(event, current_thread->getPriority().get());
+    post(event, current_thread->getPriority());
 }
 
-void PriorityEventQueueBasic::run()
+void PriorityEventQueueBasic::run(int prio)
 {
     Thread* thread=Thread::getCurrentThread();
-    int prio=thread->getPriority().get();
+    thread->setPriority(Priority(prio));
     for(;;)
     {
         Lock<KernelMutex> l(m[prio]);
@@ -124,7 +124,8 @@ void PriorityEventQueueBasic::startRun(){
         current_thread->setPriority(Priority(i));
         for(int j=0;j<num_core;j++)
         {
-            std::thread t(&PriorityEventQueueBasic::run, this);
+            std::thread t(&PriorityEventQueueBasic::run, this, i);
+            t.detach();
         }
     }
 }

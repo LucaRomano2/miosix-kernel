@@ -138,7 +138,7 @@ public:
      * 
      * \throws any exception that is thrown by the event functions
      */
-    void run();
+    void run(int prio);
 
     void startRun();
 
