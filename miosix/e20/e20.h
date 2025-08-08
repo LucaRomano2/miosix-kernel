@@ -193,6 +193,27 @@ private:
     int num_core=2;
 };
 
+class LazyScheduler
+{
+    public:
+        template <typename Lambda>
+        void schedule(std::function<void ()> f, Lambda cont, PriorityEventQueueBasic& p){
+            ConditionVariable cv;
+            KernelMutex m;
+            Lock<KernelMutex> l(m);
+            bool done = false;
+            std::function<void()> cont_sync = [&]() {
+                cont();
+                done = true;
+                cv.signal();
+            };
+            p.post(cont_sync);
+            f();
+            while(!done){
+                cv.wait(l);
+            }
+        }
+};
 
 class PriorityEventQueueOptimized
 {
