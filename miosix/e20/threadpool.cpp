@@ -8,33 +8,58 @@ namespace threadpool {
 // Class PriorityEventQueue
 //
 
-void PriorityEventQueue::post(future_base* fut, Priority priority)
+void PriorityEventQueue::post(Task* task, Priority priority)
 {
     Lock<KernelMutex> l(m[priority.get()]);
-    events[priority.get()].push_back(fut);
+    events[priority.get()].push_back(task);
     cv[priority.get()].signal();
 }
 
-void PriorityEventQueue::post(future_base* fut)
+void PriorityEventQueue::post(Task* task)
 {
     Thread* current_thread=Thread::getCurrentThread();
-    post(fut, current_thread->getPriority());
+    post(task, current_thread->getPriority());
+}
+
+void PriorityEventQueue::child_run(int prio)
+{
+    Thread* thread=Thread::getCurrentThread();
+    thread->setPriority(Priority(prio));
+    Task* t;
+    in_execution[prio]++;
+    while(in_execution[prio] - 1 < num_core)
+    {
+        Lock<KernelMutex> l(m[prio]);
+        while(events[prio].empty()) cv[prio].wait(l);
+        t = events[prio].front();
+        events[prio].pop_front();
+        {
+            Unlock<KernelMutex> u(l);
+            t->execute();
+        }
+    }    
+}
+
+void PriorityEventQueue::start_child_run()
+{
+    Thread* thread=Thread::getCurrentThread();
+    std::thread(PriorityEventQueue::child_run, this, thread->getPriority().get());    
 }
 
 void PriorityEventQueue::run(int prio)
 {
     Thread* thread=Thread::getCurrentThread();
     thread->setPriority(Priority(prio));
-    future_base* fut;
+    Task* t;
     for(;;)
     {
         Lock<KernelMutex> l(m[prio]);
         while(events[prio].empty()) cv[prio].wait(l);
-        fut=events[prio].front();
+        t = events[prio].front();
         events[prio].pop_front();
         {
             Unlock<KernelMutex> u(l);
-            fut->execute();
+            t->execute();
         }
     }
 }
@@ -48,6 +73,7 @@ void PriorityEventQueue::startRun(){
         {
             std::thread t(&PriorityEventQueue::run, this, i);
             t.detach();
+            in_execution[i]++;
         }
     }
 }
