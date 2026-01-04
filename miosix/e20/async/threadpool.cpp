@@ -43,7 +43,7 @@ void PriorityEventQueue::child_run(int prio)
 void PriorityEventQueue::start_child_run()
 {
     Thread* thread=Thread::getCurrentThread();
-    std::thread(PriorityEventQueue::child_run, this, thread->getPriority().get());    
+    std::thread(&PriorityEventQueue::child_run, this, thread->getPriority().get());    
 }
 
 void PriorityEventQueue::run(int prio)

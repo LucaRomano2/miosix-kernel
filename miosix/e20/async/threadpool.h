@@ -7,7 +7,6 @@
 #include <sched.h>
 #include <thread>
 #include <future>
-#include "callback.h"
 #include "config/miosix_settings.h"
 
 using namespace miosix;
@@ -19,6 +18,39 @@ class Task
 public:
     virtual void execute() = 0;
     virtual ~Task() = default;
+};
+
+class PriorityEventQueue
+{
+public:
+
+    void post(Task* fut, Priority priority);
+
+    void post(Task* fut);
+
+    void child_run(int prio);
+
+    void start_child_run();
+
+    void run(int prio);
+
+    void startRun();
+
+    static PriorityEventQueue& instance();
+
+    PriorityEventQueue(const PriorityEventQueue&) = delete;
+    PriorityEventQueue& operator= (const PriorityEventQueue&) = delete;
+
+private:
+    std::list<Task*> events[NUM_PRIORITIES]; ///< Event queue
+    mutable KernelMutex m[NUM_PRIORITIES]; ///< Mutex for synchronisation
+    ConditionVariable cv[NUM_PRIORITIES]; ///< Condition variable for synchronisation
+    int num_core=2;
+    int in_execution[2];
+
+    PriorityEventQueue() {
+        startRun();
+    }
 };
 
 template<typename R>
@@ -91,39 +123,6 @@ public:
 private:
     Task_impl<R>* task;
     R r;
-};
-
-class PriorityEventQueue
-{
-public:
-
-    void post(Task* fut, Priority priority);
-
-    void post(Task* fut);
-
-    void child_run(int prio);
-
-    void start_child_run();
-
-    void run(int prio);
-
-    void startRun();
-
-    static PriorityEventQueue& instance();
-
-    PriorityEventQueue(const PriorityEventQueue&) = delete;
-    PriorityEventQueue& operator= (const PriorityEventQueue&) = delete;
-
-private:
-    std::list<Task*> events[NUM_PRIORITIES]; ///< Event queue
-    mutable KernelMutex m[NUM_PRIORITIES]; ///< Mutex for synchronisation
-    ConditionVariable cv[NUM_PRIORITIES]; ///< Condition variable for synchronisation
-    int num_core=2;
-    int in_execution[2];
-
-    PriorityEventQueue() {
-        startRun();
-    }
 };
 
 template<class F, class... Args>
