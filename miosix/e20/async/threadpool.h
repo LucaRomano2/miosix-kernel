@@ -7,6 +7,7 @@
 #include <sched.h>
 #include <thread>
 #include <future>
+#include <unordered_set>
 #include "config/miosix_settings.h"
 
 using namespace miosix;
@@ -17,16 +18,16 @@ class Task
 {
 public:
     virtual void execute() = 0;
-    virtual ~Task() = default;
+    virtual ~Task() {}
 };
 
 class PriorityEventQueue
 {
 public:
 
-    void post(Task* fut, Priority priority);
+    void post(Task* task, Priority priority);
 
-    void post(Task* fut);
+    void post(Task* task);
 
     void child_run(int prio);
 
@@ -35,6 +36,8 @@ public:
     void run(int prio);
 
     void startRun();
+
+    bool is_scheduler();
 
     static PriorityEventQueue& instance();
 
@@ -45,33 +48,32 @@ private:
     std::list<Task*> events[NUM_PRIORITIES]; ///< Event queue
     mutable KernelMutex m[NUM_PRIORITIES]; ///< Mutex for synchronisation
     ConditionVariable cv[NUM_PRIORITIES]; ///< Condition variable for synchronisation
+    std::unordered_set<Thread*> scheduler_threads; 
     int num_core=2;
-    int in_execution[2];
+    std::atomic<int> in_execution[NUM_PRIORITIES];
 
-    PriorityEventQueue() {
-        startRun();
-    }
+    PriorityEventQueue() {}
 };
 
-template<typename R>
-class Task_impl : public Task
+template<typename T>
+class Task_ : public Task
 {
 public:
     void execute() override
     {
+        T temp = task();
         Lock<KernelMutex> l(m);
-        return_value = task();
+        return_value = temp;
         finished = true;
-        cv.signal();
-        if(!can_return) delete this;
+        cv.broadcast();
     }
 
-    R get()
+    T get()
     {
         Lock<KernelMutex> l(m);
         while(!finished) 
         {
-            PriorityEventQueue::instance().start_child_run();
+            //if(!PriorityEventQueue::instance().is_scheduler()) PriorityEventQueue::instance().start_child_run();
             cv.wait(l);
         }
         return return_value;
@@ -83,58 +85,75 @@ public:
         return finished;
     }
 
-    void cannot_finish()
-    {
-        can_return = false;
+    Task_(std::function<T()> task) : task(std::move(task)), finished(false) {
     }
 
-    Task_impl(std::function<R()> task) : task(std::move(task)), finished(false), can_return(true) {}
-
 private:
-    std::function<R()> task;
-    R return_value;
+    std::function<T()> task;
+    T return_value;
     KernelMutex m;
     ConditionVariable cv;
     bool finished;
-    bool can_return;
 };
 
-template<typename R>
+template<typename T>
 class future
 {
 public:
-    R get()
+    T get()
     {
-        r = task->get();
-        return r;
+        return task->get();
     }
 
-    future(Task_impl<R>* task)
+    future(Task_<T>* task)
     {
         this->task = task;
     }
 
-    ~future()
+    future(future&& other) noexcept
     {
-        if(task->is_finished()) delete task;
-        else task->cannot_finish();
+        this->task = other.task;
+        other.task = nullptr;    
+    }
+
+    future& operator=(future&& other)=delete;
+    /*future& operator=(future&& other) noexcept
+    {
+        if(this != &other)
+        {
+            if(task) delete task;
+            task = other.task;
+            other.task = nullptr;
+        }
+        return *this;
+    }*/
+
+    future(future& other)=delete;
+    future& operator=(future& other)=delete;
+
+    __attribute__((noinline)) ~future()
+    {
+        if(task) delete task;
     }
 
 private:
-    Task_impl<R>* task;
-    R r;
+    Task_<T>* task;
 };
 
 template<class F, class... Args>
-threadpool::future<typename std::result_of<F(Args...)>::type> async(F&& f, Args&&... args)
+future<typename std::result_of<F(Args...)>::type> async(F&& f, Args&&... args)
 {
     typedef typename std::result_of<F(Args...)>::type return_type;
     std::function<return_type()> t = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
-    Task_impl<return_type>* task_impl = new Task_impl<return_type>(std::move(t));
-    Task* task = task_impl;
-    future<return_type> fut = future<return_type>(task_impl);
+    Task_<return_type>* task_ = new Task_<return_type>(t);
+    Task* task = task_;
     PriorityEventQueue::instance().post(task);
-    return fut;
+    return future<return_type>(task_);
+}
+
+inline void start_async()
+{
+    PriorityEventQueue::instance().startRun();
 }
 
 }

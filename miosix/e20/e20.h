@@ -193,6 +193,7 @@ private:
     int num_core=2;
 };
 
+// continuation passing style
 class LazyScheduler
 {
     public:
