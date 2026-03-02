@@ -12,14 +12,16 @@ void PriorityEventQueue::post(Task* task, Priority priority)
 {
     Lock<KernelMutex> l(m[priority.get()]);
     Thread* current_thread=Thread::getCurrentThread();
-    if(scheduler_threads.count(current_thread))
-    {
-        --in_execution[priority.get()];
-        to_terminate.insert(current_thread);
-    }
     if(in_execution[priority.get()].load() + 1 >= num_core)
     {
-        Task* task_restart = new TaskRestart(current_thread); 
+        Task* task_restart = new TaskRestart(current_thread);
+        if(scheduler_threads.count(current_thread))
+        {
+			std::thread t(&PriorityEventQueue::run, this, priority.get());
+			t.detach();
+			in_execution[priority.get()]--;
+			to_terminate.insert(current_thread);
+		}
         events[priority.get()].push_back(task);
         events[priority.get()].push_back(task_restart);
         cv[priority.get()].signal();
@@ -42,17 +44,20 @@ void PriorityEventQueue::run(int prio)
     Thread* thread=Thread::getCurrentThread();
     thread->setPriority(Priority(prio));
     scheduler_threads.insert(thread);
+    in_execution[prio]++;
     Task* t;
     while(!to_terminate.count(thread))
     {
         Lock<KernelMutex> l(m[prio]);
-        while(events[prio].empty()) cv[prio].wait(l);
+        while(events[prio].empty()){
+			--in_execution[prio];
+			cv[prio].wait(l);
+			++in_execution[prio];
+		}
         t = events[prio].front();
         events[prio].pop_front();
         Unlock<KernelMutex> u(l);
-        ++in_execution[prio];
         t->execute();
-        --in_execution[prio];
     }
     to_terminate.erase(thread);
 }

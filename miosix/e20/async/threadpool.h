@@ -14,10 +14,35 @@ using namespace miosix;
 
 namespace threadpool {
 
+// Lock safe unordered set
+template<typename T>
+class UnorderedSet{
+private:
+    std::unordered_set<T> s;
+    mutable KernelMutex m;
+
+public:
+    void insert(const T& val){
+        Lock<KernelMutex> l(m);
+        s.insert(val);
+    }
+
+    bool count(const T& val) const {
+        Lock<KernelMutex> l(m);
+        return s.count(val);
+    }
+    
+    void erase(const T& val){
+		Lock<KernelMutex> l(m);
+		s.erase(val);
+	}
+};
+
 class Task
 {
 public:
     virtual void execute() = 0;
+    virtual bool can_return() = 0;
     virtual ~Task() {}
 };
 
@@ -39,6 +64,16 @@ public:
 
     bool is_scheduler();
 
+    void decrease_in_execution()
+    {
+		in_execution[Thread::getCurrentThread()->getPriority().get()]--;
+	}
+    
+    void increase_in_execution()
+    {
+		in_execution[Thread::getCurrentThread()->getPriority().get()]++;
+	}
+
     static PriorityEventQueue& instance();
 
     PriorityEventQueue(const PriorityEventQueue&) = delete;
@@ -48,7 +83,7 @@ private:
     std::list<Task*> events[NUM_PRIORITIES]; ///< Event queue
     mutable KernelMutex m[NUM_PRIORITIES]; ///< Mutex for synchronisation
     ConditionVariable cv[NUM_PRIORITIES]; ///< Condition variable for synchronisation
-    std::unordered_set<Thread*> scheduler_threads; 
+    UnorderedSet<Thread*> scheduler_threads; 
     int num_core=2;
     std::atomic<int> in_execution[NUM_PRIORITIES];
 
@@ -73,11 +108,28 @@ public:
         Lock<KernelMutex> l(m);
         while(!finished) 
         {
-            //if(!PriorityEventQueue::instance().is_scheduler()) PriorityEventQueue::instance().start_child_run();
-            cv.wait(l);
+            if(PriorityEventQueue::instance().is_scheduler())
+            {
+                PriorityEventQueue::instance().start_child_run();
+				PriorityEventQueue::instance().decrease_in_execution();
+				cv.wait(l);
+				PriorityEventQueue::instance().increase_in_execution();
+			}else{
+				cv.wait(l);
+            }
         }
         return return_value;
     }
+
+    bool can_return() override
+    {
+		return ret;
+	}
+	
+	void cannot_return()
+	{
+		ret = false;
+	}
 
     bool is_finished()
     {
@@ -85,8 +137,7 @@ public:
         return finished;
     }
 
-    Task_(std::function<T()> task) : task(std::move(task)), finished(false) {
-    }
+    Task_(std::function<T()> task) : task(std::move(task)), finished(false), ret(true) {}
 
 private:
     std::function<T()> task;
@@ -94,6 +145,7 @@ private:
     KernelMutex m;
     ConditionVariable cv;
     bool finished;
+    std::atomic<bool> ret;
 };
 
 template<typename T>
@@ -117,23 +169,15 @@ public:
     }
 
     future& operator=(future&& other)=delete;
-    /*future& operator=(future&& other) noexcept
-    {
-        if(this != &other)
-        {
-            if(task) delete task;
-            task = other.task;
-            other.task = nullptr;
-        }
-        return *this;
-    }*/
-
     future(future& other)=delete;
     future& operator=(future& other)=delete;
 
-    __attribute__((noinline)) ~future()
+    ~future()
     {
-        if(task) delete task;
+        if(task){
+			if(task->is_finished()) delete task;
+			task->cannot_return();
+		}
     }
 
 private:

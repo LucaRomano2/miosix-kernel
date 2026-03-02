@@ -31,20 +31,24 @@ void PriorityEventQueue::child_run(int prio)
     while(in_execution[prio] - 1 < num_core)
     {
         Lock<KernelMutex> l(m[prio]);
-        while(events[prio].empty()) cv[prio].wait(l);
+        while(events[prio].empty())
+        {
+            in_execution[prio]--;
+            cv[prio].wait(l);
+            in_execution[prio]++;
+        }
         t = events[prio].front();
         events[prio].pop_front();
-        {
-            Unlock<KernelMutex> u(l);
-            t->execute();
-        }
+        Unlock<KernelMutex> u(l);
+        t->execute();
+        if(!t->can_return()) delete t;
     }
-    scheduler_threads.insert(thread);
+    in_execution[prio]--;
+    scheduler_threads.erase(thread);
 }
 
 void PriorityEventQueue::start_child_run()
 {
-    iprintf("childrun\n");
     Thread* thread=Thread::getCurrentThread();
     std::thread t(&PriorityEventQueue::child_run, this, thread->getPriority().get());
     t.detach();    
@@ -64,6 +68,7 @@ void PriorityEventQueue::run(int prio)
         events[prio].pop_front();
         Unlock<KernelMutex> u(l);
         t->execute();
+        if(!t->can_return()) delete t;
     }
 }
 
